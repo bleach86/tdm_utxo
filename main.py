@@ -272,7 +272,7 @@ class ConsolidateUTXOs:
                 self.password = password
                 valid_password = True
             except KeyboardInterrupt:
-                print("\n\nExiting")
+                input("Press any key to exit")
                 sys.exit()
             except ValueError as e:
                 if e == "cannot parse integer from empty string":
@@ -872,6 +872,7 @@ def main() -> None:
         print(
             "ghost-cli not found\nPlease ensure ghost-cli is in the same directory as this script"
         )
+        input("Press any key to exit")
         sys.exit()
 
     rpc_cli: RpcClientCLI = RpcClientCLI(
