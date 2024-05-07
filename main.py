@@ -175,6 +175,7 @@ class ConsolidateUTXOs:
                 self.zap_anon()
 
                 print("\nConsolidation complete\nHave a great day!")
+                input("Press Enter to exit")
 
             case 2:
                 self.mode = "hotstaking"
@@ -183,6 +184,7 @@ class ConsolidateUTXOs:
                 self.consolidate_anon_utxos()
 
                 print("\nConsolidation complete\nHave a great day!")
+                input("Press Enter to exit")
 
     def get_cs_addresses_from_wallet(self):
         if self.wallet is None:
@@ -272,7 +274,7 @@ class ConsolidateUTXOs:
                 self.password = password
                 valid_password = True
             except KeyboardInterrupt:
-                input("Press any key to exit")
+                input("Press Enter to exit")
                 sys.exit()
             except ValueError as e:
                 if e == "cannot parse integer from empty string":
@@ -872,7 +874,7 @@ def main() -> None:
         print(
             "ghost-cli not found\nPlease ensure ghost-cli is in the same directory as this script"
         )
-        input("Press any key to exit")
+        input("Press Enter to exit")
         sys.exit()
 
     rpc_cli: RpcClientCLI = RpcClientCLI(
