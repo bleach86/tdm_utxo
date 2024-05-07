@@ -1,2 +1,2 @@
-cuatrorpc
-pwinput
+cuatrorpc==0.7.2
+pwinput==1.0.3
