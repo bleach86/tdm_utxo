@@ -866,8 +866,16 @@ class ConsolidateUTXOs:
 
 
 def main() -> None:
+    cli_bin = "./ghost-cli" if OS != "Windows" else "./ghost-cli.exe"
+
+    if not os.path.exists(cli_bin):
+        print(
+            "ghost-cli not found\nPlease ensure ghost-cli is in the same directory as this script"
+        )
+        sys.exit()
+
     rpc_cli: RpcClientCLI = RpcClientCLI(
-        cli_bin="./ghost-cli" if OS != "Windows" else "./ghost-cli.exe",
+        cli_bin=cli_bin,
         data_dir=ghost_data_dir,
         daemon_conf=os.path.join(ghost_data_dir, "ghost.conf"),
     )
