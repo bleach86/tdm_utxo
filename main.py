@@ -1,4 +1,4 @@
-from cuatrorpc import RpcClientCLI
+from cuatrorpc import RpcClientCLI, RpcClient
 from binascii import unhexlify
 import platform
 import os, sys
@@ -6,6 +6,8 @@ from typing import Optional
 import pwinput
 import time
 import random
+import pprint
+import json
 
 OS = platform.system()
 
@@ -17,12 +19,13 @@ elif OS == "Windows":
     ghost_data_dir = os.path.expanduser("~/AppData/Roaming/Ghost")
 
 
-MIN_TX = 0.00001
-MAX_FEE = 0.35
+MIN_TX = 0.001
+MAX_FEE = 0.095
 
 
 class ConsolidateUTXOs:
-    def __init__(self, rpc_cli: RpcClientCLI) -> None:
+
+    def __init__(self, rpc_cli: RpcClientCLI | RpcClient) -> None:
         self.rpc_cli = rpc_cli
         self.wallet: Optional[str] = None
         self.is_encrypted: bool = False
@@ -270,24 +273,27 @@ class ConsolidateUTXOs:
                 print("Please try again")
                 continue
             try:
-                self.unlock_wallet(str(password), 1)
+                self.unlock_wallet(str(password), 1, check_password=True)
                 self.password = password
                 valid_password = True
-            except KeyboardInterrupt:
-                input("Press Enter to exit")
-                sys.exit()
-            except ValueError as e:
-                if e == "cannot parse integer from empty string":
+
+            except Exception as e:
+                error = e.args[0]
+
+                if error == "cannot parse integer from empty string":
+                    self.password = password
                     valid_password = True
-            except RuntimeError as e:
-                if "The wallet passphrase entered was incorrect." in str(e):
+                elif (
+                    "The wallet passphrase entered was incorrect." in error
+                    or "status code 500" in error
+                ):
                     print("Error: The wallet passphrase entered was incorrect.")
                     print("Please try again")
                     time.sleep(3)
-                else:
-                    raise e
 
-    def unlock_wallet(self, passphrase: str, timeout: int = 60) -> None:
+    def unlock_wallet(
+        self, passphrase: str, timeout: int = 60, check_password: bool = False
+    ) -> None:
         if self.wallet is None:
             raise ValueError("Wallet not set")
         try:
@@ -295,11 +301,8 @@ class ConsolidateUTXOs:
             self.rpc_cli.callrpc(
                 "walletpassphrase", [passphrase, timeout], wallet=self.wallet
             )
-        except ValueError as e:
-            if e == "cannot parse integer from empty string":
-                raise e
-        except RuntimeError as e:
-            if "The wallet passphrase entered was incorrect." in str(e):
+        except Exception as e:
+            if check_password:
                 raise e
 
     def get_wallet_info(self) -> dict:
@@ -371,9 +374,8 @@ class ConsolidateUTXOs:
 
         available_balance = anon_balance - preserve_balance
 
-        print(f"Available balance: {available_balance}")
-
         if available_balance <= 0:
+            print("No anon balance to zap")
             return "No anon balance to zap"
 
         left_to_zap = available_balance
@@ -393,7 +395,7 @@ class ConsolidateUTXOs:
                 )
                 left_to_zap -= 1500
 
-                if len(tx_outputs) >= 300:
+                if len(tx_outputs) >= 250:
                     txid = self.rpc_cli.callrpc(
                         "sendtypeto",
                         [
@@ -413,18 +415,20 @@ class ConsolidateUTXOs:
                     print(f"Anon balance zapped: {txid}")
 
                     tx_outputs = []
-                    self.wait_for_tx(txid)
+                    if left_to_zap > 0:
+                        self.wait_for_tx(txid)
 
             else:
-                tx_outputs.append(
-                    {
-                        "address": "script",
-                        "amount": left_to_zap,
-                        "subfee": True,
-                        "script": cs_script,
-                    }
-                )
-                left_to_zap = 0
+                if left_to_zap > 0:
+                    tx_outputs.append(
+                        {
+                            "address": "script",
+                            "amount": left_to_zap,
+                            "subfee": True,
+                            "script": cs_script,
+                        }
+                    )
+                    left_to_zap = 0
 
         if not tx_outputs:
             return txid
@@ -459,7 +463,7 @@ class ConsolidateUTXOs:
         if self.is_encrypted and self.password is None:
             self.get_password_from_user()
 
-        utxos = self.list_unspent()
+        utxos = self.list_unspent(max_value=500)
         total_utxos = len(utxos)
         if not total_utxos:
             print("No UTXOs found")
@@ -471,7 +475,6 @@ class ConsolidateUTXOs:
             if utxo["spendable"]
             and self.isCsOut(utxo["scriptPubKey"])
             and not utxo["address"].startswith("g")
-            and utxo["amount"] < 500
         ]
 
         total_low_value_cs_utxos = len(low_value_cs_utxos)
@@ -480,22 +483,23 @@ class ConsolidateUTXOs:
             print("No UTXOs that are not already coldstaking found")
             return "No UTXOs that are not already coldstaking found"
 
-        utxo_groups = {}
-
-        for utxo in low_value_cs_utxos:
-            if utxo["address"] not in utxo_groups:
-                utxo_groups[utxo["address"]] = []
-            utxo_groups[utxo["address"]].append(utxo)
+        for i in utxos:
+            if i not in low_value_cs_utxos:
+                print(i)
 
         txid = ""
 
-        for address, utxos in utxo_groups.items():
-            print(f"Total UTXOs: {len(utxos)}")
-            if len(utxos) >= 1:
-                cs_script = utxos[0]["scriptPubKey"]
-                res = self.process_utxos_script(utxos, "ghost", "ghost", cs_script)
-                if res:
-                    txid = res
+        utxo_total = sum(utxo["amount"] for utxo in low_value_cs_utxos)
+
+        if total_low_value_cs_utxos >= 2 and utxo_total >= MIN_TX:
+            print(f"Total UTXOs: {total_low_value_cs_utxos}")
+            script_pub_key = self.get_cs_script()
+            res = self.process_utxos_script(
+                low_value_cs_utxos, "ghost", "ghost", script_pub_key
+            )
+
+            if res:
+                txid = res
 
         return txid
 
@@ -509,7 +513,7 @@ class ConsolidateUTXOs:
         if self.is_encrypted and self.password is None:
             self.get_password_from_user()
 
-        utxos = self.list_unspent()
+        utxos = self.list_unspent(max_value=500)
         total_utxos = len(utxos)
         if not total_utxos:
             print("No UTXOs found")
@@ -521,7 +525,6 @@ class ConsolidateUTXOs:
             if utxo["spendable"]
             and not self.isCsOut(utxo["scriptPubKey"])
             and not utxo["address"].startswith("g")
-            and utxo["amount"] < 500
         ]
 
         total_low_value_hs_utxos = len(low_value_hs_utxos)
@@ -537,11 +540,13 @@ class ConsolidateUTXOs:
                 utxo_groups[utxo["address"]] = []
             utxo_groups[utxo["address"]].append(utxo)
 
-        for address, utxos in utxo_groups.items():
-            print(f"Total UTXOs: {len(utxos)}")
-            if len(utxos) > 2:
-                cs_script = utxos[0]["scriptPubKey"]
-                txid = self.process_utxos_script(utxos, "ghost", "ghost", cs_script)
+        for _, utxo_list in utxo_groups.items():
+            print(f"Total UTXOs: {total_utxos}")
+            utxo_total = sum(utxo["amount"] for utxo in utxo_list)
+            if len(utxo_list) > 2 and utxo_total >= MIN_TX:
+                script_pub_key = utxo_list[0]["scriptPubKey"]
+                self.process_utxos_script(utxo_list, "ghost", "ghost", script_pub_key)
+                time.sleep(0.1)
 
     def process_utxos_script(
         self, utxos: list, in_type: str, out_type: str, cs_script: str
@@ -593,7 +598,11 @@ class ConsolidateUTXOs:
                     wallet=self.wallet,
                 ).get("fee")
 
-                if tx_fee >= MAX_FEE or index == len(utxos) - 1:
+                if (
+                    tx_fee >= MAX_FEE
+                    or index == len(utxos) - 1
+                    or len(tx_inputs) >= 250
+                ):
                     if locktime := self.is_wallet_locked() is not None:
                         if locktime <= 1:
                             self.unlock_wallet(str(self.password), 2)
@@ -615,11 +624,7 @@ class ConsolidateUTXOs:
                             12,
                             1,
                             False,
-                            {
-                                "inputs": tx_inputs,
-                                "feeRate": 0.00007500,
-                                "show_hex": True,
-                            },
+                            {"inputs": tx_inputs, "feeRate": 0.00007500},
                         ],
                         wallet=self.wallet,
                     )
@@ -685,7 +690,11 @@ class ConsolidateUTXOs:
                     wallet=self.wallet,
                 ).get("fee")
 
-                if tx_fee >= MAX_FEE or index == len(utxos) - 1:
+                if (
+                    tx_fee >= MAX_FEE
+                    or index == len(utxos) - 1
+                    or len(tx_inputs) >= 250
+                ):
                     if locktime := self.is_wallet_locked() is not None:
                         if locktime <= 1:
                             self.unlock_wallet(str(self.password), 2)
@@ -727,8 +736,6 @@ class ConsolidateUTXOs:
         else:
             stake_addr = self.stake_addr
 
-        print(f"Stake address: {stake_addr}")
-
         if locktime := self.is_wallet_locked() is not None:
             if locktime <= 1:
                 self.unlock_wallet(str(self.password), 2)
@@ -753,7 +760,9 @@ class ConsolidateUTXOs:
 
         target_confirmations = 12
 
-        tx_details = self.rpc_cli.callrpc("gettransaction", [txid], wallet=self.wallet)
+        tx_details = self.rpc_cli.callrpc(
+            "gettransaction", [txid.strip()], wallet=self.wallet
+        )
 
         confirms = tx_details.get("confirmations", 0)
 
@@ -816,15 +825,40 @@ class ConsolidateUTXOs:
             raise ValueError("Wallet not set")
         return self.rpc_cli.callrpc("liststealthaddresses", wallet=self.wallet)
 
-    def list_unspent(self) -> list:
+    def list_unspent(self, max_value: int = 0) -> list:
         if self.wallet is None:
             raise ValueError("Wallet not set")
-        return self.rpc_cli.callrpc("listunspent", wallet=self.wallet)
+        return self.rpc_cli.callrpc(
+            "listunspent",
+            [
+                1,
+                9999999,
+                [],
+                False,
+                {
+                    "minimumAmount": MIN_TX,
+                    "maximumAmount": max_value if max_value > 0 else 9999999,
+                },
+            ],
+            wallet=self.wallet,
+        )
 
     def list_unspent_anon(self) -> list:
         if self.wallet is None:
             raise ValueError("Wallet not set")
-        return self.rpc_cli.callrpc("listunspentanon", wallet=self.wallet)
+        return self.rpc_cli.callrpc(
+            "listunspentanon",
+            [
+                1,
+                9999999,
+                [],
+                False,
+                {
+                    "minimumAmount": MIN_TX,
+                },
+            ],
+            wallet=self.wallet,
+        )
 
     def list_wallets(self) -> list:
         return self.rpc_cli.callrpc("listwallets")
@@ -867,22 +901,68 @@ class ConsolidateUTXOs:
             yield lst[i : i + batch_size]
 
 
-def main() -> None:
-    cli_bin = "./ghost-cli" if OS != "Windows" else "./ghost-cli.exe"
+def get_rpc_user_pass() -> tuple:
+    if not os.path.exists("secrets.json"):
+        rpc_user = input("Enter RPC username: ")
+        rpc_pass = pwinput.pwinput(prompt="Enter RPC password: ")
+        return rpc_user, rpc_pass
 
-    if not os.path.exists(cli_bin):
-        print(
-            "ghost-cli not found\nPlease ensure ghost-cli is in the same directory as this script"
-        )
-        input("Press Enter to exit")
-        sys.exit()
-
-    rpc_cli: RpcClientCLI = RpcClientCLI(
-        cli_bin=cli_bin,
-        data_dir=ghost_data_dir,
-        daemon_conf=os.path.join(ghost_data_dir, "ghost.conf"),
+    with open("secrets.json", "r") as f:
+        settings = json.load(f)
+    rpc_user = settings.get("rpc_user") or input("Enter RPC username: ")
+    rpc_pass = settings.get("rpc_password") or pwinput.pwinput(
+        prompt="Enter RPC password: "
     )
-    ConsolidateUTXOs(rpc_cli)
+
+    valid_credentials = False
+
+    while not valid_credentials:
+        try:
+            rpc = RpcClient(username=rpc_user, password=rpc_pass, port=51725)
+            rpc.callrpc("uptime")
+            valid_credentials = True
+        except Exception as e:
+            error = e.args[0]
+
+            if "status code 401" in error:
+                print("Invalid credentials")
+                rpc_user = input("Enter RPC username: ")
+                rpc_pass = pwinput.pwinput(prompt="Enter RPC password: ")
+            elif "Connection refused" in error:
+                print("Connection refused\nPlease ensure Ghost-core is running")
+                input("Press Enter to exit")
+                sys.exit()
+
+    return rpc_user, rpc_pass
+
+
+def main() -> None:
+
+    args = sys.argv[1:]
+
+    rpc: RpcClientCLI | RpcClient
+
+    if args:
+        if args[0].lower() == "-cli":
+            cli_bin = "./ghost-cli" if OS != "Windows" else "ghost-cli.exe"
+
+        if not os.path.exists(cli_bin):
+            print(
+                "ghost-cli not found\nPlease ensure ghost-cli is in the same directory as this script"
+            )
+            input("Press Enter to exit")
+            sys.exit()
+
+        rpc = RpcClientCLI(
+            cli_bin=cli_bin,
+            data_dir=ghost_data_dir,
+            daemon_conf=os.path.join(ghost_data_dir, "ghost.conf"),
+        )
+    else:
+        rpc_user, rpc_pass = get_rpc_user_pass()
+        rpc = RpcClient(username=rpc_user, password=rpc_pass, port=51725)
+
+    ConsolidateUTXOs(rpc)
 
 
 if __name__ == "__main__":

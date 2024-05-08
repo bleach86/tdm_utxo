@@ -1,3 +1,7 @@
 /.venv
 /.mypy_cache
 ghost-cli
+/build
+/tdm_utxo_linux_x86_64
+tdm_xtxo.spec
+
