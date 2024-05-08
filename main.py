@@ -928,7 +928,11 @@ def get_rpc_user_pass() -> tuple:
                 print("Invalid credentials")
                 rpc_user = input("Enter RPC username: ")
                 rpc_pass = pwinput.pwinput(prompt="Enter RPC password: ")
-            elif "Connection refused" in error:
+            elif (
+                "Connection refused" in error
+                or "No connection could be made because the target machine actively refused it. (os error 10061)"
+                in error
+            ):
                 print("Connection refused\nPlease ensure Ghost-core is running")
                 input("Press Enter to exit")
                 sys.exit()
