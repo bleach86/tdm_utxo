@@ -415,11 +415,11 @@ class ConsolidateUTXOs:
                     print(f"Anon balance zapped: {txid}")
 
                     tx_outputs = []
-                    if left_to_zap >= MIN_TX:
+                    if left_to_zap > 0:
                         self.wait_for_tx(txid)
 
             else:
-                if left_to_zap >= MIN_TX:
+                if left_to_zap > 0:
                     tx_outputs.append(
                         {
                             "address": "script",
